@@ -1,0 +1,2 @@
+id,host,port,secure,user,password
+account01,imap.old-provider.example,993,true,person@example.com,"replace-with-source-password"

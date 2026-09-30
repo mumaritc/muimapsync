@@ -1,0 +1,22 @@
+{
+  "name": "muimapsync",
+  "version": "1.0.0",
+  "description": "Resumable IMAP backup and restore from CSV account lists",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test.mjs",
+    "download": "node download.mjs",
+    "upload": "node upload.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "csv-parse": "^7.0.3",
+    "imapflow": "^1.7.8"
+  }
+}
