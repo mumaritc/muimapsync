@@ -1,8 +1,32 @@
-# IMAP provider migration
+# muimapsync
 
-Two Node.js scripts transfer accounts through a local backup. Requires Node.js 22 or newer and IMAP access to both providers. Accounts run sequentially, so 16 accounts of up to 1 GB each do not need to fit in memory. Downloads stream to disk; uploads hold one email (including attachments) in memory at a time.
+Back up and migrate IMAP mailboxes between providers using two Node.js scripts and CSV account lists. Download mail to a local backup, then restore it to the destination provider with per-message progress tracking.
+
+- Copy Inbox, Sent, Junk, Trash, Drafts, custom folders, and attachments.
+- Preserve original message bytes, internal dates, and supported flags.
+- Resume interrupted transfers and verify backups with SHA-256 checksums.
+- Map folder names between providers and process multiple accounts sequentially.
+- Download with 1 MiB chunks and metadata batches of 200 messages.
+
+No database or web server is required. Downloads stream to disk; uploads hold one email, including attachments, in memory at a time. This project copies mail; it does not delete source messages or synchronize deletions.
+
+## Requirements
+
+- Node.js 22 or newer and npm.
+- IMAP enabled on both providers, with passwords, app passwords, or OAuth access tokens.
+- Destination mailboxes already created, with enough quota for the transferred mail.
+- Disk space for the raw mail plus metadata and any retained snapshots. For 16 accounts containing 1 GB each, allow more than 16 GB. Label-based providers can expose additional copies across folders.
 
 ## Setup and run
+
+Download and extract this repository, or clone it:
+
+```sh
+git clone https://github.com/mumaritc/muimapsync.git
+cd muimapsync
+```
+
+Install dependencies and copy the CSV templates:
 
 ```powershell
 npm ci
@@ -10,7 +34,36 @@ Copy-Item source.example.csv source.csv
 Copy-Item destination.example.csv destination.csv
 ```
 
-Edit both CSV files with your 16 accounts. Match the `id` between the source and destination rows; usernames and passwords may differ. Use unique simple IDs such as `account01` through `account16`. The `secure` field accepts `true` or `false` in any letter case, with surrounding spaces ignored; blank defaults to `true`. CSV passwords containing commas or quotes must be quoted; double any quote within a quoted field. Do not trim spaces from passwords.
+On macOS or Linux, use `cp` instead of `Copy-Item`. All `node` and `npm` commands are the same.
+
+Edit both CSV files with your accounts. Match the `id` between the source and destination rows; usernames and passwords may differ. Use unique IDs containing letters, digits, underscores, or hyphens, such as `account01`.
+
+Source CSV example:
+
+```csv
+id,host,port,secure,user,password
+account01,imap.old-provider.example,993,true,person@example.com,"source-app-password"
+```
+
+Destination CSV example:
+
+```csv
+id,host,port,secure,user,password
+account01,imap.new-provider.example,993,true,person@example.com,"destination-app-password"
+```
+
+| CSV field | Meaning |
+| --- | --- |
+| `id` | Stable identifier linking the source account, backup, and destination account. |
+| `host` | Provider's IMAP hostname. |
+| `port` | Defaults to `993` for TLS or `143` for STARTTLS. |
+| `secure` | `true` for TLS; `false` for required STARTTLS. Case and surrounding spaces are ignored; blank defaults to `true`. |
+| `user` | IMAP login, usually the full email address. |
+| `password` | Password or provider app password. Preserve any leading/trailing spaces. |
+| `password_env` | Optional environment variable name to read instead of `password`. |
+| `token_env` | Optional environment variable containing an OAuth access token; takes precedence over password authentication. |
+
+CSV passwords containing commas or quotes must be quoted; double any quote within a quoted field. Never commit filled account CSVs.
 
 ```powershell
 # Try one account first
@@ -24,9 +77,27 @@ node upload.mjs --csv destination.csv
 
 Both scripts accept `--backup D:\MailBackup`. Always use the same backup directory for both. A failed account sets a nonzero exit code and processing continues with the next account. Rerun the same command after fixing a connection, quota, or credential problem. There are no automatic upload retries after uncertain delivery.
 
+### Command reference
+
+| Option | Use |
+| --- | --- |
+| `--csv <file>` | Required account CSV. |
+| `--backup <directory>` | Backup location; defaults to `backup` in the current directory. |
+| `--account <id>` | Process only the matching account. Without it, process all CSV rows. |
+| `--folder-map <file>` | JSON source-to-destination folder mapping for upload. |
+| `--force` | Upload only: allow restoring into the original source account, with a warning. |
+| `--help` | Show command usage. |
+
+```powershell
+node download.mjs --csv source.csv --backup D:\MailBackup
+node upload.mjs --csv destination.csv --backup D:\MailBackup
+```
+
+### Performance and restarting
+
 Downloads use 1 MiB chunks and fetch metadata in batches of 200 messages over one connection. This reduces network round trips while preserving per-message checksums and durable progress. Progress reports appear after completed messages at roughly 10-second intervals and at folder completion, showing reused messages, downloaded MiB, and average transfer speed. Provider limits and bandwidth still determine actual speed.
 
-Code updates apply on the next run; an already-running process continues unchanged. To switch versions, wait for `account08: download complete` (or your current account), then press Ctrl+C and wait for the process to exit. If it leaves `backup/.lock`, remove that file only after confirming the process has stopped. Restart with the same CSV and backup directory: completed accounts are revisited, verified emails are reused, and missing or incomplete emails are downloaded. Exclude any account you manually emptied for a restore test from that download CSV so its backup snapshot is preserved.
+Code updates apply on the next run; an already-running process continues unchanged. To switch versions, wait for the current account's `download complete` message, then press Ctrl+C and wait for the process to exit. If it leaves `backup/.lock`, remove that file only after confirming the process has stopped. Restart with the same CSV and backup directory: completed accounts are revisited, verified emails are reused, and missing or incomplete emails are downloaded. Exclude any account you manually emptied for a restore test from that download CSV so its backup snapshot is preserved.
 
 ## What is transferred
 
@@ -35,7 +106,7 @@ Code updates apply on the next run; an already-running process continues unchang
 After downloading and manually clearing the test mailbox, restore the existing backup with:
 
 ```powershell
-node upload.mjs --csv data.csv --account account01 --force
+node upload.mjs --csv source.csv --account account01 --force
 ```
 
 `--force` allows the destination to match the source and prints a warning before modifying the mailbox. Passing the flag acknowledges that warning; no interactive confirmation is required. It appends messages and may create duplicates if messages remain. It does not overwrite mail, reset completed upload receipts, or bypass pending-upload, integrity, or UIDVALIDITY checks. Do not rerun the download after clearing the mailbox: that would replace the current backup manifest with the now-empty mailbox snapshot.
@@ -94,3 +165,25 @@ npm test
 The offline check exercises backup/restore with simulated IMAP clients, including raw bytes, dates, flags, empty/nested folders, resume, checksum rejection, and interrupted uploads. It also checks the 200-message batch boundary, out-of-order and missing metadata, larger chunk settings, and recovery from truncated downloads. Real provider authentication and provider-specific behavior still require the single-account trial above.
 
 Library reference: [ImapFlow client API](https://imapflow.com/docs/api/imapflow-client/).
+
+## Troubleshooting
+
+| Problem | Next step |
+| --- | --- |
+| CSV validation fails | Check the required headers, unique IDs, quoting, and `secure` values. |
+| Authentication or connection fails | Check IMAP access, host, port, TLS mode, and app-password/token requirements. Tokens are not refreshed automatically. |
+| Backup is locked | Wait for the other process. Remove `.lock` only after confirming no transfer is using that backup. |
+| Backup is incomplete | Finish or resume its download before uploading. |
+| Backup integrity check fails | For a still-intact source, rerun download to repair cached content. For an emptied source, recover the affected file from another backup instead. |
+| Uncertain upload / pending receipt | Follow the recovery steps above; do not blindly retry or clear all receipts. |
+| Destination equals source | Use `--force` only for an intentional same-account restore. |
+| UIDVALIDITY changed | Stop and reconcile the mailbox with its backup/progress records before starting a fresh migration. |
+| Provider rejects a large message or quota is full | Resolve the provider limit, verify whether the message arrived, then follow pending-receipt recovery. |
+
+## Contributing
+
+Run `npm ci` and `npm test` before submitting a change. Keep tests offline and use synthetic messages. When reporting a problem, include the command with personal paths removed, Node.js version, and sanitized error text. Do not attach account CSVs, tokens, raw emails, or private backup metadata.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 mumaritc.

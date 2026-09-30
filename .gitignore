@@ -3,3 +3,7 @@ backup/
 *.csv
 !*.example.csv
 *.tmp
+.env
+.env.*
+*.eml
+*.log
